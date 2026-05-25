@@ -1,0 +1,8 @@
+__pycache__/
+*.py[cod]
+*.sqlite3
+*.db
+.env
+users.json
+keys.json
+pending.json
