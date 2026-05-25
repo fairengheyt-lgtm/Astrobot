@@ -1,24 +1,27 @@
 # AstroVPN Telegram Bot
 
-AstroVPN is a Telegram VPN subscription bot for **VLESS + Reality + TCP** subscriptions managed through **3X-UI**. The bot runs on Railway with Telegram polling and a small web server on port `8080` for the Tribute webhook.
+AstroVPN is a production-oriented Telegram bot for selling and managing **VLESS Reality / 3X-UI** subscriptions. The bot uses Telegram polling for user interaction and runs a small `aiohttp` web server for Tribute webhooks and health checks.
 
 ## What is implemented
 
-The bot registers users on `/start`, shows a profile with subscription status, expiry date and free slots, accepts **Telegram Stars** payments and **Tribute** donations, creates or extends a unique 3X-UI client for every paid user, sends a VLESS link and receipt after payment, and checks expired subscriptions every 10 minutes to disable clients automatically.
+The current version is intentionally kept as a single `main.py` for easy Railway deployment, but internally it is split into clear layers: typed configuration, SQLite persistence, 3X-UI server pool, VPN client service, payment processing, Telegram UI, admin tools and background maintenance.
 
 | Area | Implementation |
 | --- | --- |
-| Telegram runtime | Polling, not Telegram webhook |
-| Web server | `aiohttp` on `PORT`, default `8080` |
-| Tribute endpoint | `POST /tribute/webhook` |
-| Database | SQLite file configured by `DB_FILE` |
-| VPN panel | `py3xui` with `AsyncApi` |
-| Payment methods | Telegram Stars and Tribute |
-| Protocol | VLESS + Reality + TCP, port `443`, flow `xtls-rprx-vision` |
+| Runtime | `aiogram 3` polling plus `aiohttp` server on `PORT` |
+| Database | SQLite with WAL mode, users, subscriptions, pending payments and processed-event idempotency |
+| Payments | Telegram Stars and Tribute, both controlled by feature flags |
+| VPN panel | `py3xui.AsyncApi`, automatic client create/update/disable |
+| Servers | Single server by default, optional `XUI_SERVERS_JSON` multi-server pool |
+| Links | Manual `vless://` Reality link or optional 3X-UI subscription URL via `XUI_SUBSCRIPTION_BASE` |
+| Maintenance | Expired pending payments cleanup, 24-hour expiry reminders, automatic disabling of expired clients |
+| Admins | Single `ADMIN_ID` or comma-separated `BOT_ADMINS` / `ADMIN_IDS` |
 
 ## Railway setup
 
-Set all variables from `.env.example` in Railway. The required variables are `BOT_TOKEN`, `ADMIN_ID`, `XUI_USERNAME`, `XUI_PASSWORD`, `VLESS_PUBLIC_KEY`, and `VLESS_SHORT_ID`. The deployment command is already configured in `railway.toml` as:
+Set variables from `.env.example` in Railway. The required minimum is `BOT_TOKEN`, `ADMIN_ID` or `BOT_ADMINS`, `XUI_USERNAME`, `XUI_PASSWORD`, `VLESS_PUBLIC_KEY` and `VLESS_SHORT_ID`. If you use 3X-UI subscription links instead of direct VLESS links, also set `XUI_SUBSCRIPTION_BASE`.
+
+The deployment command is already configured as:
 
 ```toml
 [deploy]
@@ -31,39 +34,74 @@ The `start.sh` file also runs:
 python main.py
 ```
 
-In Railway Networking, expose port `8080` or make sure Railway maps the service `PORT` environment variable to the public domain. Then configure Tribute to send webhooks to:
+Expose the Railway service port through the default `PORT` variable. The health check endpoint is:
+
+```text
+https://your-railway-domain/health
+```
+
+## Tribute webhook
+
+Configure Tribute to send webhooks to:
 
 ```text
 https://your-railway-domain/tribute/webhook
 ```
 
-## Tribute webhook format
+If `TRIBUTE_SECRET` is set, use either the header `X-Tribute-Secret` or append it to the webhook URL:
 
-The handler expects real Tribute payments in this form:
+```text
+https://your-railway-domain/tribute/webhook?secret=YOUR_SECRET
+```
+
+The handler accepts the test request `{"test_event":"test_event"}` and ignores it. Real payments are expected as `new_donation` by default:
 
 ```json
 {
   "name": "new_donation",
   "payload": {
+    "id": "tribute-payment-id",
     "telegram_user_id": 123456789,
-    "amount": 19900
+    "amount": 19900,
+    "currency": "RUB"
   }
 }
 ```
 
-The test request `{"test_event": "test_event"}` is accepted and ignored. User identification is based only on `payload.telegram_user_id`; comments are not used.
+The bot can also read the Telegram ID from `payload.telegram_id`, `payload.tg_id` or `payload.comment`, which makes manual Tribute configurations more tolerant.
+
+## Multi-server configuration
+
+For one server, use the simple variables from `.env.example`: `XUI_HOST`, `SERVER_IP`, `XUI_INBOUND_ID`, `MAX_CLIENTS` and VLESS Reality fields. For multiple servers, set `XUI_SERVERS_JSON`; it overrides the single-server variables.
+
+```json
+[
+  {
+    "id": 1,
+    "name": "nl-1",
+    "host": "https://1.2.3.4:2053",
+    "server_ip": "1.2.3.4",
+    "max_clients": 100,
+    "inbound_id": 1,
+    "subscription_base": ""
+  }
+]
+```
+
+If `XUI_DYNAMIC_INBOUND=true`, the bot asks 3X-UI for the first inbound and uses it automatically. If this fails and `inbound_id` is set, the configured value is used as fallback.
 
 ## Admin commands
 
 | Command | Purpose |
 | --- | --- |
-| `/addkey` | Shows help for automatic 3X-UI key creation and manual reserve keys |
-| `/addkey vless://...` | Saves a reserve manual key in SQLite |
-| `/give user_id` | Manually issues 30 days of access through 3X-UI |
-| `/revoke user_id` | Disables the user in 3X-UI and marks the subscription inactive |
-| `/users` | Shows registered users and subscription status |
-| `/keys` | Shows active client count, free slots, reserve keys and 3X-UI limits |
+| `/addkey` | Compatibility help: explains that keys are now created automatically in 3X-UI |
+| `/give <user_id> [days]` | Manually issue or extend access for a user |
+| `/revoke <user_id>` | Disable the client in 3X-UI and mark subscription inactive |
+| `/users` | Show recently registered users and their subscription status |
+| `/stats` | Show total users, active subscriptions and server usage |
+| `/keys` | Alias for `/stats` |
+| `/backup` | Send a temporary SQLite database backup to the admin |
 
-## Important notes
+## Notes
 
-Only one instance of the bot should run at the same time, otherwise Telegram can raise `TelegramConflictError`. All user-facing messages use HTML parse mode. Message edits are wrapped to avoid failures when Telegram returns `message is not modified`.
+Only one instance of the bot should run at the same time, otherwise Telegram may return a polling conflict. User-facing messages use Telegram HTML parse mode. Payment processing is idempotent, so repeated Stars or Tribute events with the same payment identifier do not grant duplicate subscription periods.
