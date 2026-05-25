@@ -12,7 +12,7 @@ from aiogram.types import (
 from aiogram.filters import CommandStart
 
 # ====== КОНФИГ ======
-BOT_TOKEN = "8335279244:AAFMK4Ku9rmTmoL56FL2N8Zhe8EJYgw1pnc"
+BOT_TOKEN = ""
 TRIBUTE_LINK = "https://t.me/tribute/app?startapp=dI5p"
 SUPPORT_USERNAME = "@ВАШ_НИКНЕЙМ"
 ADMIN_ID = 8339239363
