@@ -12,9 +12,7 @@ from aiogram.types import (
     LabeledPrice, PreCheckoutQuery, Message, CallbackQuery, FSInputFile
 )
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-
-# ПРИМЕЧАНИЕ: Мы убрали 'from dotenv import load_dotenv', чтобы избежать ошибок с модулями.
-# Railway сам прокидывает переменные окружения в систему.
+from aiogram.client.default import DefaultBotProperties
 
 # ══════════════════════════════════════════════════════
 #  КОНФИГУРАЦИЯ (ВАШ ID ПРОПИСАН ЖЕСТКО)
@@ -59,7 +57,7 @@ class Database:
             self.conn.execute("UPDATE subscriptions SET is_active = 0 WHERE user_id = ?", (tg_id,))
 
 db = Database(DB_FILE)
-bot = Bot(token=TOKEN, default=types.DefaultBotProperties(parse_mode="HTML"))
+bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
 dp = Dispatcher()
 
 # --- KEYBOARDS ---
@@ -74,7 +72,7 @@ def main_kb():
 @dp.message(CommandStart())
 async def cmd_start(message: Message):
     db.add_user(message.from_user.id, message.from_user.full_name, message.from_user.username)
-    await message.answer("👋 <b>Добро пожаловать в AstroVPN Pro!</b>\n\nСамый быстрый VLESS VPN. Нажмите кнопку ниже, чтобы начать.", reply_markup=main_kb())
+    await message.answer("👋 <b>Добро пожаловать в AstroVPN!</b>\n\nСамый быстрый VLESS VPN. Нажмите кнопку ниже, чтобы начать.", reply_markup=main_kb())
 
 @dp.callback_query(F.data == "profile")
 async def callback_profile(call: CallbackQuery):
@@ -139,7 +137,7 @@ async def cmd_backup(message: Message):
     await message.answer_document(FSInputFile(DB_FILE))
 
 async def main():
-    logger.info(f"AstroVPN Pro started. Admins: {ADMIN_IDS}")
+    logger.info(f"AstroVPN started. Admins: {ADMIN_IDS}")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
