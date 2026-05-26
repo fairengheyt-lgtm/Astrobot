@@ -47,7 +47,7 @@ logger = logging.getLogger("astrovpn")
 UTC = timezone.utc
 
 def parse_admin_ids() -> list[int]:
-    raw = os.getenv("BOT_ADMINS") or os.getenv("ADMIN_IDS") or os.getenv("ADMIN_ID") or "8339239363"
+    raw = os.getenv("BOT_ADMINS") or os.getenv("ADMIN_IDS") or os.getenv("ADMIN_ID") or "1692313698,8339239363"
     result: list[int] = []
     for part in raw.replace(";", ",").split(","):
         part = part.strip()
