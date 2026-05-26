@@ -69,6 +69,7 @@ class Database:
                     client_uuid TEXT UNIQUE, 
                     expires_at DATETIME, 
                     is_active BOOLEAN DEFAULT 1, 
+                    is_paid BOOLEAN DEFAULT 0,
                     FOREIGN KEY(user_id) REFERENCES users(tg_id)
                 )
             """)
@@ -86,27 +87,40 @@ class Database:
     def get_user_sub(self, tg_id: int):
         return self.conn.execute("SELECT * FROM subscriptions WHERE user_id = ? AND is_active = 1", (tg_id,)).fetchone()
 
-    def add_sub(self, tg_id: int, days: int):
+    def add_sub(self, tg_id: int, days: int, is_paid: bool = False):
         sub = self.get_user_sub(tg_id)
         client_uuid = str(uuid.uuid4())
         
         if sub:
-            # Продлеваем существующую
             current_expiry = datetime.strptime(sub['expires_at'], "%Y-%m-%d %H:%M:%S.%f")
             new_expiry = max(current_expiry, datetime.now()) + timedelta(days=days)
             client_uuid = sub['client_uuid']
             with self.conn:
-                self.conn.execute("UPDATE subscriptions SET expires_at = ? WHERE user_id = ? AND is_active = 1", (new_expiry, tg_id))
+                self.conn.execute(
+                    "UPDATE subscriptions SET expires_at = ?, is_paid = ? WHERE user_id = ? AND is_active = 1", 
+                    (new_expiry, 1 if is_paid or sub['is_paid'] else 0, tg_id)
+                )
         else:
-            # Создаем новую
             new_expiry = datetime.now() + timedelta(days=days)
             with self.conn:
-                self.conn.execute("INSERT INTO subscriptions (user_id, client_uuid, expires_at) VALUES (?, ?, ?)", (tg_id, client_uuid, new_expiry))
+                self.conn.execute(
+                    "INSERT INTO subscriptions (user_id, client_uuid, expires_at, is_paid) VALUES (?, ?, ?, ?)", 
+                    (tg_id, client_uuid, new_expiry, 1 if is_paid else 0)
+                )
         
         return client_uuid, new_expiry
 
-    def get_referral_count(self, tg_id: int):
-        return self.conn.execute("SELECT COUNT(*) FROM users WHERE referred_by = ?", (tg_id,)).fetchone()[0]
+    def get_ref_stats(self, tg_id: int):
+        # Всего приглашенных (кто зашел по ссылке)
+        total_invited = self.conn.execute("SELECT COUNT(*) FROM users WHERE referred_by = ?", (tg_id,)).fetchone()[0]
+        # Те, кто реально оплатил хотя бы раз
+        total_paid = self.conn.execute("""
+            SELECT COUNT(DISTINCT u.tg_id) 
+            FROM users u 
+            JOIN subscriptions s ON u.tg_id = s.user_id 
+            WHERE u.referred_by = ? AND s.is_paid = 1
+        """, (tg_id,)).fetchone()[0]
+        return total_invited, total_paid
 
 db = Database(DB_FILE)
 bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
@@ -159,14 +173,16 @@ async def callback_profile(call: CallbackQuery):
 
 @dp.callback_query(F.data == "refs")
 async def callback_refs(call: CallbackQuery):
-    count = db.get_referral_count(call.from_user.id)
+    invited, paid = db.get_ref_stats(call.from_user.id)
     bot_user = await bot.get_me()
     ref_link = f"https://t.me/{bot_user.username}?start=ref{call.from_user.id}"
     
     text = (
         f"🎁 <b>Реферальная программа</b>\n\n"
         f"Приглашайте друзей и получайте <b>{REF_BONUS_DAYS} дней</b> подписки бесплатно за каждую их покупку!\n\n"
-        f"👥 Приглашено друзей: <b>{count}</b>\n"
+        f"👥 Приглашено: <b>{invited}</b> чел.\n"
+        f"💎 Оплатили подписку: <b>{paid}</b> чел.\n\n"
+        f"⚠️ <i>Бонус начисляется только после первой оплаты другом.</i>\n\n"
         f"🔗 Ваша ссылка:\n<code>{ref_link}</code>"
     )
     await call.message.edit_text(text, reply_markup=main_kb())
@@ -189,7 +205,8 @@ async def pre_checkout(query: PreCheckoutQuery):
 
 @dp.message(F.successful_payment)
 async def success_payment(message: Message):
-    uid, expires = db.add_sub(message.from_user.id, 30)
+    # Добавляем подписку и помечаем как оплаченную
+    uid, expires = db.add_sub(message.from_user.id, 30, is_paid=True)
     
     # Обработка реферала
     user = db.get_user(message.from_user.id)
@@ -248,7 +265,6 @@ async def cmd_backup(message: Message):
 
 async def main():
     logger.info(f"AstroVPN started. Admins: {ADMIN_IDS}")
-    # Удаляем вебхуки и сбрасываем накопившиеся сообщения для чистого старта
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
