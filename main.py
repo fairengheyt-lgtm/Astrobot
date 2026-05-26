@@ -15,13 +15,31 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.client.default import DefaultBotProperties
 
 # ══════════════════════════════════════════════════════
-#  КОНФИГУРАЦИЯ (ВАШ ID ПРОПИСАН ЖЕСТКО)
+#  КОНФИГУРАЦИЯ БОТА
 # ══════════════════════════════════════════════════════
 TOKEN = "8938769101:AAGpMsifotw_yOCWktPmbQipre5fvwXtnnE"
 ADMIN_IDS = [1692313698, 8339239363] 
 STARS_PRICE = 199
-PRICE_RUB = 199
 DB_FILE = "astrovpn.sqlite3"
+
+# ══════════════════════════════════════════════════════
+#  НАСТРОЙКИ ВАШЕГО VPN СЕРВЕРА (ИЗМЕНИТЕ ИХ!)
+# ══════════════════════════════════════════════════════
+VPN_SERVER_IP = "1.2.3.4"      # IP вашего сервера
+VPN_PORT = 443                 # Порт (обычно 443)
+VPN_SNI = "google.com"         # SNI из настроек Reality
+VPN_SID = "shortid"            # ShortID из настроек Reality
+VPN_PBK = "public_key"         # Public Key (если нужен в ссылке)
+
+def generate_vless_link(user_uuid, name="AstroVPN"):
+    """Создает рабочую ссылку VLESS Reality"""
+    return (
+        f"vless://{user_uuid}@{VPN_SERVER_IP}:{VPN_PORT}?"
+        f"type=tcp&security=reality&fp=chrome&pbk={VPN_PBK}&"
+        f"sni={VPN_SNI}&sid={VPN_SID}&flow=xtls-rprx-vision#{name}"
+    )
+
+# ══════════════════════════════════════════════════════
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 logger = logging.getLogger("astrovpn")
@@ -49,6 +67,9 @@ class Database:
         expires_at = datetime.now() + timedelta(days=days)
         client_uuid = str(uuid.uuid4())
         with self.conn:
+            # Сначала деактивируем старые подписки
+            self.conn.execute("UPDATE subscriptions SET is_active = 0 WHERE user_id = ?", (tg_id,))
+            # Добавляем новую
             self.conn.execute("INSERT INTO subscriptions (user_id, client_uuid, expires_at) VALUES (?, ?, ?)", (tg_id, client_uuid, expires_at))
         return client_uuid, expires_at
 
@@ -78,9 +99,17 @@ async def cmd_start(message: Message):
 async def callback_profile(call: CallbackQuery):
     sub = db.get_user_sub(call.from_user.id)
     if sub:
-        text = f"👤 <b>Ваш профиль</b>\n🆔 ID: <code>{call.from_user.id}</code>\n💎 Статус: ✅ Активна до {sub['expires_at']}\n\n🔑 Ваш ключ:\n<code>vless://{sub['client_uuid']}@server:443?type=tcp&security=reality&fp=chrome&sni=google.com&sid=shortid&flow=xtls-rprx-vision#AstroVPN</code>"
+        vless_link = generate_vless_link(sub['client_uuid'])
+        text = (
+            f"👤 <b>Ваш профиль</b>\n"
+            f"🆔 ID: <code>{call.from_user.id}</code>\n"
+            f"💎 Статус: ✅ Активна до {sub['expires_at']}\n\n"
+            f"🔑 Ваш ключ (нажмите, чтобы скопировать):\n"
+            f"<code>{vless_link}</code>"
+        )
     else:
         text = f"👤 <b>Ваш профиль</b>\n🆔 ID: <code>{call.from_user.id}</code>\n💎 Статус: ❌ Неактивна"
+    
     await call.message.edit_text(text, reply_markup=main_kb())
 
 @dp.callback_query(F.data == "buy")
