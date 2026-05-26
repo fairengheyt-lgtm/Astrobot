@@ -1,72 +1,32 @@
 
-from __future__ import annotations
-
 import asyncio
-import json
 import logging
 import os
 import sqlite3
 import uuid
-from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
-from typing import Any, Optional, List
-from urllib.parse import quote
-
-from aiohttp import web
 from aiogram import Bot, Dispatcher, F, types
-from aiogram.client.default import DefaultBotProperties
-from aiogram.enums import ParseMode
-from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandStart
 from aiogram.types import (
-    FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, 
-    LabeledPrice, PreCheckoutQuery, ContentType, Message, CallbackQuery
+    InlineKeyboardButton, InlineKeyboardMarkup, 
+    LabeledPrice, PreCheckoutQuery, Message, CallbackQuery, FSInputFile
 )
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from dotenv import load_dotenv
 
-try:
-    from py3xui import AsyncApi, Client
-except ImportError:
-    AsyncApi = None
-    Client = None
-
-# ══════════════════════════════════════════════════════
-#  CONFIGURATION
-# ══════════════════════════════════════════════════════
-TOKEN = "8938769101:AAGpMsifotw_yOCWktPmbQipre5fvwXtnnE"
-
 load_dotenv()
 
-logging.basicConfig(
-    level=os.getenv("LOG_LEVEL", "INFO").upper(),
-    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
-)
+# ══════════════════════════════════════════════════════
+#  КОНФИГУРАЦИЯ (ВАШ ID ПРОПИСАН ЖЕСТКО)
+# ══════════════════════════════════════════════════════
+TOKEN = "8938769101:AAGpMsifotw_yOCWktPmbQipre5fvwXtnnE"
+ADMIN_IDS = [1692313698, 8339239363] # Ваш ID добавлен сюда
+STARS_PRICE = 199
+PRICE_RUB = 199
+DB_FILE = "astrovpn.sqlite3"
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 logger = logging.getLogger("astrovpn")
-UTC = timezone.utc
-
-def parse_admin_ids() -> list[int]:
-    raw = os.getenv("BOT_ADMINS") or os.getenv("ADMIN_IDS") or os.getenv("ADMIN_ID") or "1692313698,8339239363"
-    result: list[int] = []
-    for part in raw.replace(";", ",").split(","):
-        part = part.strip()
-        if part.isdigit(): result.append(int(part))
-    return list(dict.fromkeys(result))
-
-@dataclass(frozen=True)
-class Config:
-    bot_token: str = TOKEN
-    admin_ids: list[int] = None
-    db_file: str = "astrovpn.sqlite3"
-    price_rub: int = 199
-    stars_amount: int = 199
-    support_url: str = "https://t.me/support_user" # Замените на свой
-    guide_url: str = "https://telegra.ph/AstroVPN-Manual" # Замените на свой
-
-config = Config(admin_ids=parse_admin_ids())
-bot = Bot(token=config.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-dp = Dispatcher()
 
 # --- DATABASE ---
 class Database:
@@ -77,43 +37,30 @@ class Database:
 
     def _init_db(self):
         with self.conn:
-            self.conn.execute("""
-                CREATE TABLE IF NOT EXISTS users (
-                    tg_id INTEGER PRIMARY KEY,
-                    name TEXT,
-                    username TEXT,
-                    registered_at DATETIME DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-            self.conn.execute("""
-                CREATE TABLE IF NOT EXISTS subscriptions (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id INTEGER,
-                    client_uuid TEXT UNIQUE,
-                    expires_at DATETIME,
-                    is_active BOOLEAN DEFAULT 1,
-                    FOREIGN KEY(user_id) REFERENCES users(tg_id)
-                )
-            """)
+            self.conn.execute("CREATE TABLE IF NOT EXISTS users (tg_id INTEGER PRIMARY KEY, name TEXT, username TEXT, registered_at DATETIME DEFAULT CURRENT_TIMESTAMP)")
+            self.conn.execute("CREATE TABLE IF NOT EXISTS subscriptions (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, client_uuid TEXT UNIQUE, expires_at DATETIME, is_active BOOLEAN DEFAULT 1, FOREIGN KEY(user_id) REFERENCES users(tg_id))")
 
     def add_user(self, tg_id: int, name: str, username: str):
         with self.conn:
-            self.conn.execute(
-                "INSERT OR IGNORE INTO users (tg_id, name, username) VALUES (?, ?, ?)",
-                (tg_id, name, username)
-            )
+            self.conn.execute("INSERT OR IGNORE INTO users (tg_id, name, username) VALUES (?, ?, ?)", (tg_id, name, username))
 
     def get_user_sub(self, tg_id: int):
-        return self.conn.execute(
-            "SELECT * FROM subscriptions WHERE user_id = ? AND is_active = 1", (tg_id,)
-        ).fetchone()
+        return self.conn.execute("SELECT * FROM subscriptions WHERE user_id = ? AND is_active = 1", (tg_id,)).fetchone()
 
-    def get_stats(self):
-        users = self.conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
-        active_subs = self.conn.execute("SELECT COUNT(*) FROM subscriptions WHERE is_active = 1").fetchone()[0]
-        return users, active_subs
+    def add_sub(self, tg_id: int, days: int):
+        expires_at = datetime.now() + timedelta(days=days)
+        client_uuid = str(uuid.uuid4())
+        with self.conn:
+            self.conn.execute("INSERT INTO subscriptions (user_id, client_uuid, expires_at) VALUES (?, ?, ?)", (tg_id, client_uuid, expires_at))
+        return client_uuid, expires_at
 
-db = Database(config.db_file)
+    def remove_sub(self, tg_id: int):
+        with self.conn:
+            self.conn.execute("UPDATE subscriptions SET is_active = 0 WHERE user_id = ?", (tg_id,))
+
+db = Database(DB_FILE)
+bot = Bot(token=TOKEN, default=types.DefaultBotProperties(parse_mode="HTML"))
+dp = Dispatcher()
 
 # --- KEYBOARDS ---
 def main_kb():
@@ -121,97 +68,78 @@ def main_kb():
     builder.row(InlineKeyboardButton(text="💎 Купить подписку", callback_data="buy"))
     builder.row(InlineKeyboardButton(text="👤 Мой профиль", callback_data="profile"))
     builder.row(InlineKeyboardButton(text="📚 Инструкция", callback_data="guide"))
-    builder.row(InlineKeyboardButton(text="🆘 Поддержка", url=config.support_url))
     return builder.as_markup()
-
-def back_kb():
-    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="start")]])
 
 # --- HANDLERS ---
 @dp.message(CommandStart())
-@dp.callback_query(F.data == "start")
-async def cmd_start(event: Message | CallbackQuery):
-    user = event.from_user
-    db.add_user(user.id, user.full_name, user.username)
-    
-    text = (
-        "👋 **Добро пожаловать в AstroVPN Pro!**\n\n"
-        "Ваш персональный доступ к свободному интернету.\n"
-        "Используем протокол VLESS Reality — самый стабильный на сегодня."
-    )
-    
-    if isinstance(event, Message):
-        await event.answer(text, reply_markup=main_kb())
-    else:
-        await event.message.edit_text(text, reply_markup=main_kb())
+async def cmd_start(message: Message):
+    db.add_user(message.from_user.id, message.from_user.full_name, message.from_user.username)
+    await message.answer("👋 <b>Добро пожаловать в AstroVPN Pro!</b>\n\nСамый быстрый VLESS VPN. Нажмите кнопку ниже, чтобы начать.", reply_markup=main_kb())
 
 @dp.callback_query(F.data == "profile")
 async def callback_profile(call: CallbackQuery):
     sub = db.get_user_sub(call.from_user.id)
     if sub:
-        status = f"✅ Активна до {sub['expires_at']}"
-        key = f"<code>vless://{sub['client_uuid']}@server:443...</code>"
+        text = f"👤 <b>Ваш профиль</b>\n🆔 ID: <code>{call.from_user.id}</code>\n💎 Статус: ✅ Активна до {sub['expires_at']}\n\n🔑 Ваш ключ:\n<code>vless://{sub['client_uuid']}@server:443?type=tcp&security=reality&fp=chrome&sni=google.com&sid=shortid&flow=xtls-rprx-vision#AstroVPN</code>"
     else:
-        status = "❌ Неактивна"
-        key = "Купите подписку, чтобы получить ключ."
-
-    text = (
-        f"👤 **Ваш профиль**\n"
-        f"🆔 ID: `{call.from_user.id}`\n"
-        f"💎 Статус: {status}\n\n"
-        f"🔑 Ваш ключ:\n{key}"
-    )
-    await call.message.edit_text(text, reply_markup=back_kb())
+        text = f"👤 <b>Ваш профиль</b>\n🆔 ID: <code>{call.from_user.id}</code>\n💎 Статус: ❌ Неактивна"
+    await call.message.edit_text(text, reply_markup=main_kb())
 
 @dp.callback_query(F.data == "buy")
 async def callback_buy(call: CallbackQuery):
-    builder = InlineKeyboardBuilder()
-    builder.row(InlineKeyboardButton(text=f"⭐ Telegram Stars ({config.stars_amount})", callback_data="pay_stars"))
-    builder.row(InlineKeyboardButton(text=f"💳 Карта/СБП ({config.price_rub}₽)", callback_data="pay_card"))
-    builder.row(InlineKeyboardButton(text="⬅️ Назад", callback_data="start"))
-    
-    await call.message.edit_text(
-        "💎 **Выберите способ оплаты**\n\n"
-        "Подписка на 30 дней дает полный доступ ко всем серверам.",
-        reply_markup=builder.as_markup()
+    await bot.send_invoice(
+        chat_id=call.from_user.id,
+        title="VPN Подписка (30 дней)",
+        description="Доступ к высокоскоростному VPN на 30 дней.",
+        payload="vpn_30_days",
+        currency="XTR",
+        prices=[LabeledPrice(label="30 дней", amount=STARS_PRICE)]
     )
+    await call.answer()
+
+@dp.pre_checkout_query()
+async def pre_checkout(query: PreCheckoutQuery):
+    await query.answer(ok=True)
+
+@dp.message(F.content_type == types.ContentType.SUCCESSFUL_PAYMENT)
+async def success_payment(message: Message):
+    uid, expires = db.add_sub(message.from_user.id, 30)
+    await message.answer(f"✅ <b>Оплата прошла успешно!</b>\n\nВаша подписка активна до: {expires}\nКлюч доступен в профиле.")
 
 @dp.callback_query(F.data == "guide")
 async def callback_guide(call: CallbackQuery):
-    text = (
-        "📚 **Инструкция по подключению**\n\n"
-        "1. Скачайте приложение **V2RayNG** (Android) или **v2box** (iOS).\n"
-        "2. Скопируйте ваш ключ из профиля.\n"
-        "3. Нажмите кнопку '+' или 'Import from clipboard' в приложении.\n"
-        "4. Нажмите кнопку подключения.\n\n"
-        f"Подробный гайд: {config.guide_url}"
-    )
-    await call.message.edit_text(text, reply_markup=back_kb(), disable_web_page_preview=True)
+    await call.message.edit_text("📚 <b>Как подключиться?</b>\n\n1. Скачайте v2rayNG (Android) или V2Box (iOS).\n2. Скопируйте ключ из профиля.\n3. Импортируйте ключ в приложение.", reply_markup=main_kb())
 
-# --- ADMIN COMMANDS ---
-@dp.message(Command("admin"), F.from_user.id.in_(config.admin_ids))
+# --- ADMIN ---
+@dp.message(Command("admin"))
 async def cmd_admin(message: Message):
-    u, s = db.get_stats()
-    text = (
-        "⚙️ **Админ-панель AstroVPN**\n\n"
-        f"👥 Всего пользователей: `{u}`\n"
-        f"💎 Активных подписок: `{s}`\n\n"
-        "**Команды:**\n"
-        "• `/stats` — Общая статистика\n"
-        "• `/give <id> <days>` — Выдать подписку\n"
-        "• `/kick <id>` — Забрать подписку\n"
-        "• `/backup` — Получить файл БД"
-    )
-    await message.answer(text)
+    if message.from_user.id not in ADMIN_IDS: return
+    count = db.conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+    await message.answer(f"⚙️ <b>Админ-панель</b>\n\nВсего пользователей: {count}\n\nКоманды:\n/give [id] [days]\n/kick [id]\n/backup")
 
-@dp.message(Command("backup"), F.from_user.id.in_(config.admin_ids))
+@dp.message(Command("give"))
+async def cmd_give(message: Message):
+    if message.from_user.id not in ADMIN_IDS: return
+    args = message.text.split()
+    if len(args) < 3: return await message.answer("Формат: /give [id] [days]")
+    db.add_sub(int(args[1]), int(args[2]))
+    await message.answer(f"✅ Подписка выдана пользователю {args[1]}")
+
+@dp.message(Command("kick"))
+async def cmd_kick(message: Message):
+    if message.from_user.id not in ADMIN_IDS: return
+    args = message.text.split()
+    if len(args) < 2: return await message.answer("Формат: /kick [id]")
+    db.remove_sub(int(args[1]))
+    await message.answer(f"❌ Подписка пользователя {args[1]} аннулирована.")
+
+@dp.message(Command("backup"))
 async def cmd_backup(message: Message):
-    file = FSInputFile(config.db_file)
-    await message.answer_document(file, caption="📦 Бэкап базы данных")
+    if message.from_user.id not in ADMIN_IDS: return
+    await message.answer_document(FSInputFile(DB_FILE))
 
-# --- MAIN ---
 async def main():
-    logger.info("AstroVPN Pro is starting...")
+    logger.info(f"AstroVPN Pro started. Admins: {ADMIN_IDS}")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
