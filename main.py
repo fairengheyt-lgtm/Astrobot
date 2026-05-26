@@ -12,15 +12,15 @@ from aiogram.types import (
     LabeledPrice, PreCheckoutQuery, Message, CallbackQuery, FSInputFile
 )
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from dotenv import load_dotenv
 
-load_dotenv()
+# ПРИМЕЧАНИЕ: Мы убрали 'from dotenv import load_dotenv', чтобы избежать ошибок с модулями.
+# Railway сам прокидывает переменные окружения в систему.
 
 # ══════════════════════════════════════════════════════
 #  КОНФИГУРАЦИЯ (ВАШ ID ПРОПИСАН ЖЕСТКО)
 # ══════════════════════════════════════════════════════
 TOKEN = "8938769101:AAGpMsifotw_yOCWktPmbQipre5fvwXtnnE"
-ADMIN_IDS = [1692313698, 8339239363] # Ваш ID добавлен сюда
+ADMIN_IDS = [1692313698, 8339239363] 
 STARS_PRICE = 199
 PRICE_RUB = 199
 DB_FILE = "astrovpn.sqlite3"
@@ -101,7 +101,7 @@ async def callback_buy(call: CallbackQuery):
 async def pre_checkout(query: PreCheckoutQuery):
     await query.answer(ok=True)
 
-@dp.message(F.content_type == types.ContentType.SUCCESSFUL_PAYMENT)
+@dp.message(F.successful_payment)
 async def success_payment(message: Message):
     uid, expires = db.add_sub(message.from_user.id, 30)
     await message.answer(f"✅ <b>Оплата прошла успешно!</b>\n\nВаша подписка активна до: {expires}\nКлюч доступен в профиле.")
