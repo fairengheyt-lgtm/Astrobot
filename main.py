@@ -22,6 +22,7 @@ ADMIN_IDS = [1692313698, 8339239363]
 STARS_PRICE = 199
 DB_FILE = "astrovpn.sqlite3"
 REF_BONUS_DAYS = 7  # Сколько дней даем за друга
+WELCOME_BONUS_DAYS = 2 # Сколько дней даем приглашенному другу
 
 # ══════════════════════════════════════════════════════
 #  НАСТРОЙКИ ВАШЕГО VPN СЕРВЕРА
@@ -76,10 +77,11 @@ class Database:
 
     def add_user(self, tg_id: int, name: str, username: str, referred_by: int = None):
         with self.conn:
-            self.conn.execute(
+            cursor = self.conn.execute(
                 "INSERT OR IGNORE INTO users (tg_id, name, username, referred_by) VALUES (?, ?, ?, ?)", 
                 (tg_id, name, username, referred_by)
             )
+            return cursor.rowcount > 0 # Returns True if a new row was inserted, False otherwise
 
     def get_user(self, tg_id: int):
         return self.conn.execute("SELECT * FROM users WHERE tg_id = ?", (tg_id,)).fetchone()
@@ -148,9 +150,16 @@ async def cmd_start(message: Message):
         except:
             pass
     
-    db.add_user(message.from_user.id, message.from_user.full_name, message.from_user.username, referred_by)
+    is_new_user = db.add_user(message.from_user.id, message.from_user.full_name, message.from_user.username, referred_by)
+    
+    welcome_message = "👋 <b>Добро пожаловать в AstroVPN!</b>\n\nСамый быстрый VLESS VPN с защитой Reality. Мы не храним логи и обеспечиваем максимальную анонимность."
+
+    if referred_by and is_new_user:
+        db.add_sub(message.from_user.id, WELCOME_BONUS_DAYS)
+        welcome_message += f"\n\n🎉 Вы получили <b>{WELCOME_BONUS_DAYS} дней</b> бесплатной подписки как приветственный бонус от друга!"
+
     await message.answer(
-        "👋 <b>Добро пожаловать в AstroVPN!</b>\n\nСамый быстрый VLESS VPN с защитой Reality. Мы не храним логи и обеспечиваем максимальную анонимность.", 
+        welcome_message, 
         reply_markup=main_kb()
     )
 
@@ -179,10 +188,11 @@ async def callback_refs(call: CallbackQuery):
     
     text = (
         f"🎁 <b>Реферальная программа</b>\n\n"
-        f"Приглашайте друзей и получайте <b>{REF_BONUS_DAYS} дней</b> подписки бесплатно за каждую их покупку!\n\n"
+        f"Приглашайте друзей и получайте бонусы вместе!\n\n"
+        f"🤝 <b>Вашему другу:</b> {WELCOME_BONUS_DAYS} дня бесплатного теста при регистрации.\n"
+        f"💎 <b>Вам:</b> {REF_BONUS_DAYS} дней подписки после его первой покупки.\n\n"
         f"👥 Приглашено: <b>{invited}</b> чел.\n"
         f"💎 Оплатили подписку: <b>{paid}</b> чел.\n\n"
-        f"⚠️ <i>Бонус начисляется только после первой оплаты другом.</i>\n\n"
         f"🔗 Ваша ссылка:\n<code>{ref_link}</code>"
     )
     await call.message.edit_text(text, reply_markup=main_kb())
